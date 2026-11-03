@@ -73,6 +73,8 @@ fn reported_ipv4(bytes: &[u8]) -> Result<Ipv4Addr, String> {
 
 pub fn tailscale_ipv4() -> Result<Ipv4Addr, String> {
     let mut candidates = Vec::<OsString>::new();
+    #[cfg(target_os = "macos")]
+    candidates.push(OsString::from("/Applications/Tailscale.app/Contents/MacOS/Tailscale"));
     if let Some(program_files) = env::var_os("ProgramFiles") {
         candidates.push(
             PathBuf::from(program_files)

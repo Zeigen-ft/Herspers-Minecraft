@@ -26,7 +26,7 @@ jobs:
           if [ "$result" -ne 0 ]; then
             python3 - <<'PY'
           from pathlib import Path
-          text = '\n'.join(Path('tooling-tests.log').read_text(errors='replace').splitlines()[-120:])
+          text = Path('tooling-tests.log').read_text(errors='replace')[-2500:]
           text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
           print('::error title=Portable tooling tests failed::' + text)
           PY
@@ -56,7 +56,8 @@ jobs:
           $result = $LASTEXITCODE
           Get-Content tooling-tests.log
           if ($result -ne 0) {
-            $tail = (Get-Content tooling-tests.log -Tail 120) -join "`n"
+            $tail = Get-Content -Raw tooling-tests.log
+            if ($tail.Length -gt 2500) { $tail = $tail.Substring($tail.Length - 2500) }
             $message = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
             Write-Output "::error title=Windows tooling tests failed::$message"
           }

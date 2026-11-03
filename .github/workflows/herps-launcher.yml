@@ -1,0 +1,152 @@
+name: Build Herps Launcher
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform packages to build
+        type: choice
+        options: [all, windows, macos-arm64, macos-x64]
+        default: all
+  pull_request:
+    paths: ['herps_launcher/**', 'tools/package_herps.py', 'tools/smoke_herps_native.py', 'tools/ci_run.py', 'packaging/herps*', 'tests/test_herps*', 'tests/test_ci_run.py', '.github/workflows/herps-launcher.yml']
+  push:
+    branches: [main, feature/herps-launcher-cross-platform]
+    paths: ['herps_launcher/**', 'tools/package_herps.py', 'tools/smoke_herps_native.py', 'tools/ci_run.py', 'packaging/herps*', 'tests/test_herps*', 'tests/test_ci_run.py', '.github/workflows/herps-launcher.yml', 'patches/**', 'upstream.lock.json']
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.platform == 'windows' && '[{"os":"windows-latest","arch":"x86_64","python_arch":"x64"}]' || inputs.platform == 'macos-arm64' && '[{"os":"macos-15","arch":"arm64","python_arch":"arm64"}]' || inputs.platform == 'macos-x64' && '[{"os":"macos-15-intel","arch":"x86_64","python_arch":"x64"}]' || '[{"os":"windows-latest","arch":"x86_64","python_arch":"x64"},{"os":"macos-15","arch":"arm64","python_arch":"arm64"},{"os":"macos-15-intel","arch":"x86_64","python_arch":"x64"}]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
+    env:
+      CARGO_BUILD_JOBS: '3'
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+      RUSTUP_TOOLCHAIN: '1.95.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: ${{ matrix.python_arch }}
+      - name: Install launcher tools
+        run: python -m pip install -r herps_launcher/requirements.txt
+      - name: Install pinned engine toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - name: Portable and desktop integration tests
+        run: python tools/ci_run.py herps-tests.log python -m unittest discover -s tests -v
+      - name: Reuse verified Windows engine build cache
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/target
+            .cache/upstream
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: windows-x64-rust-1.95-static-fast-stack16-shaders-v1-${{ hashFiles('upstream.lock.json', 'patches/**') }}
+      - name: Reuse macOS engine build cache
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/target
+            .cache/upstream
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: herps-engine-macOS-${{ matrix.arch }}-rust-1.95-${{ hashFiles('upstream.lock.json', 'patches/**') }}
+      - name: Build Windows game
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python tools/ci_run.py herps-game-build.log pwsh -NoLogo -NoProfile -File scripts/build_windows.ps1
+      - name: Build macOS game
+        if: runner.os == 'macOS'
+        shell: bash
+        run: python tools/ci_run.py herps-game-build.log bash scripts/build_macos.sh '${{ matrix.arch }}'
+      - name: Package Windows launcher with game and source
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sourceRoot = python tools/prepare_upstream.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/ci_run.py herps-package.log python tools/package_herps.py --game dist/windows-x86_64/Herspers-Minecraft --source "$sourceRoot"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $compiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $compiler)) {
+            Write-Output '::error title=Installer compiler missing::Inno Setup 6 is required for installer generation'
+            throw 'Inno Setup 6 is required for installer generation'
+          }
+          $payload = Get-ChildItem dist/herps -Directory | Where-Object Name -Like 'herps-*' | Select-Object -First 1
+          # Inno's compressor cannot read some files under the long build prefix.
+          $shortPayload = Join-Path $env:RUNNER_TEMP 'herps-payload'
+          python -c 'import shutil,sys; shutil.copytree(sys.argv[1],sys.argv[2])' $payload.FullName $shortPayload
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/ci_run.py herps-installer-build.log "$compiler" "/DPayload=$shortPayload" "/DOutput=$((Resolve-Path dist/herps).Path)" packaging/herps-windows.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install, start and uninstall Windows launcher
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          try {
+            $setup = Get-ChildItem dist/herps -Filter '*-Setup.exe' | Select-Object -First 1
+            if (-not $setup) { throw 'The installer was not generated' }
+            $installed = Join-Path $env:RUNNER_TEMP 'Herps-Launcher-Installed'
+            $install = Start-Process -FilePath $setup.FullName -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=desktopicon', "/DIR=`"$installed`"") -PassThru -Wait
+            if ($install.ExitCode -ne 0) { throw "Installer exited with code $($install.ExitCode)" }
+            $launcher = Join-Path $installed 'Herps Launcher/Herps Launcher.exe'
+            if (-not (Test-Path $launcher)) { throw 'Installed launcher is missing' }
+            $smokeReport = Join-Path $env:RUNNER_TEMP 'herps-installed-smoke.json'
+            $smoke = Start-Process -FilePath $launcher -ArgumentList @('--smoke-test', '--require-installation', '--smoke-report', "`"$smokeReport`"") -PassThru -Wait
+            if (-not (Test-Path $smokeReport)) { throw "Installed launcher did not produce its smoke report (exit $($smoke.ExitCode))" }
+            $reportText = Get-Content -Raw $smokeReport
+            Write-Output $reportText
+            $report = $reportText | ConvertFrom-Json
+            if ($smoke.ExitCode -ne 0 -or $report.status -ne 'passed' -or $report.pages_opened -ne 5) { throw "Installed launcher smoke test failed: $reportText" }
+            $startShortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Herps Launcher/Herps Launcher.lnk'
+            $desktopShortcut = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Herps Launcher.lnk'
+            if (-not (Test-Path $startShortcut) -or -not (Test-Path $desktopShortcut)) { throw 'Installer shortcuts were not created' }
+            $uninstall = Start-Process -FilePath (Join-Path $installed 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru -Wait
+            if ($uninstall.ExitCode -ne 0) { throw "Uninstaller exited with code $($uninstall.ExitCode)" }
+            if ((Test-Path $launcher) -or (Test-Path $startShortcut) -or (Test-Path $desktopShortcut)) { throw 'Uninstaller left installed launcher or shortcuts behind' }
+          } catch {
+            $message = $_.Exception.Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Installer smoke test failed::$message"
+            throw
+          }
+      - name: Compile, select and roll back an owned Windows native mod
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sourceRoot = python tools/prepare_upstream.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/ci_run.py herps-native-smoke.log python tools/smoke_herps_native.py --game dist/windows-x86_64/Herspers-Minecraft --source "$sourceRoot" --target-cache .cache/target --report dist/herps/native-build-proof.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package macOS launcher and game DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          source_dir=$(python tools/prepare_upstream.py)
+          python tools/ci_run.py herps-package.log python tools/package_herps.py --game 'dist/${{ matrix.arch }}/Herspers Minecraft.app' --source "$source_dir"
+      - name: Verify macOS DMG integrity
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          for image in dist/herps/*.dmg; do
+            python tools/ci_run.py herps-dmg-verify.log hdiutil verify "$image"
+          done
+      - name: Upload separate versioned platform packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: Herps-Launcher-0.1.0-${{ runner.os }}-${{ matrix.arch }}
+          path: |
+            dist/herps/*.zip
+            dist/herps/*.dmg
+            dist/herps/*.exe
+            dist/herps/native-build-proof.json
+          if-no-files-found: error

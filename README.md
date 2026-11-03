@@ -2,6 +2,12 @@
 
 Desktop Minecraft clients for **Windows 10/11 x64 PCs**, with older Java Edition packages also available for **Apple Silicon / Intel Macs**.
 
+## Herps Launcher development
+
+**Start here:** [Install, use, or integrate Herps Launcher](docs/HERPS-QUICKSTART.md).
+
+The shared **Herps Launcher 0.1.0** desktop application adds pre-launch profiles, Horizon mod imports and native rebuilds, shader selection, Tailscale favorites, game logs and rollback tools for the Java Edition packages. See [launcher setup and verification limits](docs/HERPS-LAUNCHER.md) and [native app builds/downloads](https://github.com/Zeigen-ft/Herspers-Minecraft/actions/runs/41571739445). Its Windows/macOS packages are separate from the existing game downloads below. Game rendering, gameplay and two-PC multiplayer require separate validation with the user's game files.
+
 The new **Herspers Bedrock 0.3.0** target uses Cinnabar's native Rust game client and Go networking helper. The earlier APK-derived Horizon packages target **Java Edition 26.3** and remain separate.
 
 ## Bedrock PC version 0.3.0
