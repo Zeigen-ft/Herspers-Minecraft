@@ -95,6 +95,11 @@ Read **SHADERS.txt** beside the launchers for the exact tested pack versions and
 
 The folder is `%LOCALAPPDATA%\Herspers Minecraft\game\shaderpacks`. The separate Bedrock client uses a different renderer; these instructions apply to Herspers Java Edition only. Keep shaders off if diagnosing an unrelated startup failure.
 
+
+## Windows setup and three-player troubleshooting
+
+Before preparing Java Edition 26.3 resources or hosting multiplayer, follow the [Windows setup and multiplayer recovery checklist](WINDOWS-SETUP-MULTIPLAYER-RECOVERY.md). It covers full JDK 25 verification, one-CMD-command-at-a-time setup, official version-manifest SHA-1 mismatch recovery, resource validation, backups, and a controlled three-player/vehicle-lag test. The user-reported successful friend connection does not establish a permanent fix or three-player performance acceptance.
+
 ## Troubleshooting
 
 - **JDK missing:** install the full JDK 25, then close and reopen the setup window. The preparer searches installed JDK folders, `JAVA_HOME` and PATH.
