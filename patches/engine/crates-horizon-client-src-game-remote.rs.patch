@@ -64,7 +64,7 @@
              events.push_back(match event {
                  Event::Packet(p) if matches!(*p, C::LevelChunkWithLight(_)) => {
                      match r.decoder.submit(r.chunk_format.clone(), p) {
-@@ -1490,19 +1506,25 @@
+@@ -1490,19 +1506,37 @@
          let overdue = r
              .backlog_since
              .is_some_and(|since| since.elapsed() >= BACKLOG_LIMIT);
@@ -88,6 +88,18 @@
 +                self.streaming.pending(),
 +                self.pending_uploads.len()
 +            );
++            if horizon_client::spans::enabled()
++                && let Some(renderer) = &self.renderer
++            {
++                let [arena, used] = renderer.section_vertex_bytes();
++                log::info!(
++                    "Terrain memory: loaded_columns={} resident_sections={} vertex_arena_bytes={} vertex_used_bytes={}",
++                    self.world.chunks.len(),
++                    renderer.resident_sections(),
++                    arena,
++                    used
++                );
++            }
 +            r.last_queue_report = Some(Instant::now());
 +        }
 +        let chunk_budget = chunk_frame_budget(overdue);
@@ -101,7 +113,7 @@
                  events.push_front(item);
                  break;
              }
-@@ -1522,12 +1544,19 @@
+@@ -1522,12 +1556,19 @@
                              break;
                          }
                          Next::Lost => {
@@ -124,7 +136,7 @@
                      }
                      chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
                      continue;
-@@ -1549,6 +1578,7 @@
+@@ -1549,6 +1590,7 @@
                      // handleLogin: the level loading screen replaces any dialog.
                      self.close_dialogs();
                      if let Some(r) = self.remote.as_mut() {
@@ -132,7 +144,7 @@
                          r.joined = true;
                          // handleLogin: startWaitingForNewLevel with Reason.OTHER.
                          r.profile = uuid;
-@@ -1626,6 +1656,11 @@
+@@ -1626,6 +1668,11 @@
                  Event::ShowDialog(dialog) => self.show_dialog(&dialog),
                  Event::ClearDialog => self.clear_dialog(),
                  Event::CodeOfConduct(text) => self.handle_code_of_conduct(text),
@@ -144,7 +156,7 @@
                  Event::DecodeError(e) => {
                      if let Some(r) = self.remote.as_mut() {
                          r.decode_errors += 1;
-@@ -1654,7 +1689,16 @@
+@@ -1654,7 +1701,16 @@
                          return Ok(());
                      }
                      let retry = self.reconnect_after(&reason, from_server);
@@ -162,7 +174,7 @@
                      self.offer_reconnect(retry);
                      return Ok(());
                  }
-@@ -2750,7 +2794,12 @@
+@@ -2750,7 +2806,12 @@
              // ClientCommonPacketListenerImpl.handlePostEffects.
              C::PostEffects(p) => self.post_effects = p.effects,
              C::SetCamera(p) => self.remote_set_camera(p.camera_id),
@@ -176,7 +188,7 @@
              C::LightUpdate(p) => self.remote_light_update(&p),
              C::ChunksBiomes(p) => self.remote_chunks_biomes(&p),
              C::ForgetLevelChunk(p) => {
-@@ -9203,6 +9252,14 @@
+@@ -9203,6 +9264,14 @@
      use super::synced_local_use;
  
      #[test]

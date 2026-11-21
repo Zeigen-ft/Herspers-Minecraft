@@ -14,5 +14,7 @@
   "comparison": "Every member relative path, type, mode, size, link and SHA-256 of regular-file bytes; no source executed.",
   "patched_tree_sha256": "1f28fbaa20b871bbc5c678a1668ebc3ea63ce4191be364a0ecebb41824db6a7f",
   "patched_tree_identical": true,
-  "old_cache_preserved": true
+  "old_cache_preserved": true,
+  "original_verification_commit": "Herps-Launcher 98ee8a91e3135261827d4e0d6b3685a234c504ca",
+  "patched_tree_scope": "Historical rename verification. Current multiplayer patches have their own before and after hashes in patches/upstream.json."
 }
