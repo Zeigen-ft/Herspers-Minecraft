@@ -389,6 +389,7 @@ class Window(QMainWindow):
 
     def save_player_name(self):
         self.launcher.save_player_name(self.player_name.text())
+        self.statusBar().showMessage("Player name saved for the next private game.")
 
     def join(self):
         address = server_address(self.address.text())

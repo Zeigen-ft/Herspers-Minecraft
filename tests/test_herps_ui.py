@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QLabel, QPushButton
     from herps_launcher.app import Window, STYLE
 except ImportError:
     QApplication = None
@@ -43,6 +43,19 @@ class DesktopTests(unittest.TestCase):
         self.window.deleteLater()
         self.app.processEvents()
         self.temporary.cleanup()
+
+    def test_private_name_can_be_saved_before_play_and_used_to_join(self):
+        QTest.mouseClick(self.window.nav[5], Qt.MouseButton.LeftButton)
+        page = self.window.pages.currentWidget()
+        self.assertIn("In-Game Player Name", [label.text() for label in page.findChildren(QLabel)])
+        buttons = {button.text(): button for button in page.findChildren(QPushButton)}
+        self.window.player_name.setText("CJ_Corto")
+        QTest.mouseClick(buttons["Save player name"], Qt.MouseButton.LeftButton)
+        self.assertEqual(Launcher(self.launcher.support).config["player_name"], "CJ_Corto")
+        self.window.address.setText("100.80.1.1:25565")
+        with patch.object(self.window, "play_game") as play:
+            QTest.mouseClick(buttons["JOIN →"], Qt.MouseButton.LeftButton)
+            play.assert_called_once_with(server="100.80.1.1:25565", name="CJ_Corto")
 
     def test_all_seven_sidebar_buttons_navigate_actual_pages(self):
         self.assertEqual([button.text() for button in self.window.nav],
