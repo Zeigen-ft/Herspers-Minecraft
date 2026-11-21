@@ -1,0 +1,150 @@
+--- a/crates/horizon-client/src/game/remote.rs
++++ b/crates/horizon-client/src/game/remote.rs
+@@ -495,6 +495,7 @@
+     /// the oldest of them first waited (`poll_remote`).
+     backlog: VecDeque<Received>,
+     backlog_since: Option<Instant>,
++    last_queue_report: Option<Instant>,
+     /// `ClientboundTransferPacket`'s target: when the connection ends the
+     /// game connects here, the stored cookies carried over (`TransferState`).
+     transfer: Option<String>,
+@@ -516,6 +517,16 @@
+ /// decoding. Android boosts its chunk budget while retaining a frame bound;
+ /// the queue continues progressing in order instead of causing a long burst.
+ const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
++// Includes decoder jobs and completed columns pending ordered insertion.
++const REMOTE_EVENT_WINDOW: usize = 32;
++
++fn chunk_frame_budget(overdue: bool) -> Duration {
++    if overdue {
++        Duration::from_millis(4)
++    } else {
++        CHUNK_PACKETS_PER_FRAME
++    }
++}
+ /// The open menu name of a server's horse inventory, then its chest's
+ /// columns (the packet names no `MenuType`).
+ const MOUNT_MENU: &str = "horizon:mount";
+@@ -896,6 +907,7 @@
+             chunk_center: (0, 0),
+             backlog: VecDeque::new(),
+             backlog_since: None,
++            last_queue_report: None,
+             server_links: Vec::new(),
+             debug_query: Default::default(),
+             transfer: None,
+@@ -1465,8 +1477,8 @@
+     /// Process what the network thread received (once per frame, like the
+     /// client's packet processor), in order. Chunk packets get
+     /// `CHUNK_PACKETS_PER_FRAME`: once a frame has spent it, the events from
+-    /// the next chunk packet on wait for the next frame, unless they have
+-    /// already waited `BACKLOG_LIMIT` (Android still bounds the boosted work).
++    /// the next chunk packet on wait for the next frame. Older work gets a
++    /// larger budget but still yields on every platform.
+     /// A chunk packet still decoding holds
+     /// back what follows it.
+     pub(super) fn poll_remote(&mut self) -> Result<()> {
+@@ -1476,7 +1488,10 @@
+         let mut events = std::mem::take(&mut r.backlog);
+         // Chunk packets start decoding now; the frame that reaches one in
+         // order inserts its column.
+-        for event in r.session.poll() {
++        for event in r
++            .session
++            .poll_limit(REMOTE_EVENT_WINDOW.saturating_sub(events.len()))
++        {
+             events.push_back(match event {
+                 Event::Packet(p) if matches!(*p, C::LevelChunkWithLight(_)) => {
+                     match r.decoder.submit(r.chunk_format.clone(), p) {
+@@ -1490,19 +1505,25 @@
+         let overdue = r
+             .backlog_since
+             .is_some_and(|since| since.elapsed() >= BACKLOG_LIMIT);
+-        // A mobile frame must not drain an arbitrarily large overdue burst:
+-        // a decoder that needed >50 ms otherwise turns its whole queue into
+-        // one long main-thread stall. Boost progress without changing order.
+-        let bounded = cfg!(target_os = "android") || !overdue;
+-        let chunk_budget = if cfg!(target_os = "android") && overdue {
+-            Duration::from_millis(4)
+-        } else {
+-            CHUNK_PACKETS_PER_FRAME
+-        };
++        if overdue
++            && r.last_queue_report
++                .is_none_or(|t| t.elapsed() >= Duration::from_secs(10))
++        {
++            log::info!(
++                "Multiplayer backlog: dimension={} events={} mesh_pending={} gpu_uploads_pending={}",
++                r.dimension.name,
++                events.len(),
++                self.streaming.pending(),
++                self.pending_uploads.len()
++            );
++            r.last_queue_report = Some(Instant::now());
++        }
++        let chunk_budget = chunk_frame_budget(overdue);
+         let mut chunks = Duration::ZERO;
+         while let Some(item) = events.pop_front() {
+-            let chunk = matches!(item, Received::Chunk(_));
+-            if chunk && bounded && chunks >= chunk_budget {
++            let chunk = matches!(&item, Received::Chunk(_))
++                || matches!(&item, Received::Event(Event::Packet(p)) if matches!(**p, C::LevelChunkWithLight(_)));
++            if chunk && chunks >= chunk_budget {
+                 events.push_front(item);
+                 break;
+             }
+@@ -1522,12 +1543,19 @@
+                             break;
+                         }
+                         Next::Lost => {
+-                            log::warn!("Horizon: the chunk decoder stopped; a column is missing");
+-                            continue;
++                            let reason =
++                                "Connection lost while loading world: the chunk decoder stopped.";
++                            log::error!("{reason}");
++                            self.leave_server(Some(reason.into()))?;
++                            return Ok(());
+                         }
+                     };
+                     if let C::LevelChunkWithLight(p) = *packet {
+-                        self.remote_chunk(&p, Some((&format, column)));
++                        if let Err(e) = self.remote_chunk(&p, Some((&format, column))) {
++                            log::warn!("{e}");
++                            self.leave_server(Some(e))?;
++                            return Ok(());
++                        }
+                     }
+                     chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
+                     continue;
+@@ -1654,7 +1682,16 @@
+                         return Ok(());
+                     }
+                     let retry = self.reconnect_after(&reason, from_server);
+-                    self.leave_server(Some(reason))?;
++                    let loading = self
++                        .remote
++                        .as_ref()
++                        .is_some_and(|r| r.joined && !r.loaded_sent);
++                    let message = if loading {
++                        format!("Connection lost while loading world\n{reason}")
++                    } else {
++                        reason
++                    };
++                    self.leave_server(Some(message))?;
+                     self.offer_reconnect(retry);
+                     return Ok(());
+                 }
+@@ -2750,7 +2787,12 @@
+             // ClientCommonPacketListenerImpl.handlePostEffects.
+             C::PostEffects(p) => self.post_effects = p.effects,
+             C::SetCamera(p) => self.remote_set_camera(p.camera_id),
+-            C::LevelChunkWithLight(p) => self.remote_chunk(&p, None),
++            C::LevelChunkWithLight(p) => {
++                if let Err(e) = self.remote_chunk(&p, None) {
++                    log::warn!("{e}");
++                    self.leave_server(Some(e))?;
++                }
++            }
+             C::LightUpdate(p) => self.remote_light_update(&p),
+             C::ChunksBiomes(p) => self.remote_chunks_biomes(&p),
+             C::ForgetLevelChunk(p) => {

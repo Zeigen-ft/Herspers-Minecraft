@@ -122,3 +122,10 @@ pwsh -File scripts/build_windows.ps1
 ```
 
 The script uses Rust 1.95.0, the locked upstream source and its optimized `fast` profile (optimization level 3, with link-time optimization disabled). It produces a portable x64 ZIP under `dist/windows-x86_64`. For a full release-profile build, add `-Profile release`. Repeated builds preserve earlier packages in separate output folders. Full resource preparation and gameplay are separate from compilation.
+
+## Join a private server
+
+1. Start Tailscale and connect to the host's network.
+2. Open **Join-Tailscale.cmd** in the installed game folder. Enter the host address, then a unique player name such as `CJ_Corto`. Use the same name on every visit to retain your offline player identity.
+3. If you use Herps Launcher, open **Multiplayer → In-Game Player Name → Save player name**, enter the host address and select **JOIN**. After saving, you can also join from the game's multiplayer menu.
+4. If disconnected, record the exact message and time before reconnecting. See [logs, three-player testing and safe rollback](HOSTING-TAILSCALE.md#private-multiplayer-troubleshooting).

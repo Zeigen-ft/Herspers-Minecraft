@@ -41,6 +41,22 @@ class LauncherTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.launcher = Launcher(self.root / "support")
 
+    def test_private_name_survives_restart_and_both_join_paths(self):
+        installation = self.fixture_install()
+        self.launcher.save_player_name("CJ_Corto")
+        reopened = Launcher(self.launcher.support)
+        with patch.object(reopened, "installation", return_value=installation):
+            home = reopened.command()
+            self.assertEqual(home[-2:], ["--name", "CJ_Corto"])
+            self.assertNotIn("--server", home)
+            self.assertEqual(reopened.command("100.80.1.1:25565")[-4:],
+                             ["--server", "100.80.1.1:25565", "--name", "CJ_Corto"])
+            self.assertEqual(reopened.command("100.80.1.1:25565", "Other_1")[-1], "Other_1")
+        for invalid in ("", "ab", "a" * 17, "CJ Corto", "éCJ", " CJ_Corto", "CJ_Corto\n"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                reopened.save_player_name(invalid)
+        self.assertEqual(Launcher(self.launcher.support).config["player_name"], "CJ_Corto")
+
     def test_platform_paths_and_targets(self):
         self.assertEqual(support_dir("Windows", self.root, {"LOCALAPPDATA": "C:/Local"}), Path("C:/Local/Herspers Minecraft"))
         self.assertEqual(support_dir("Darwin", self.root), self.root / "Library/Application Support/Herspers Minecraft")

@@ -40,7 +40,7 @@
     {
       "path": "crates/horizon-client/src/game.rs",
       "before_sha256": "de63b396454bbd394d4f3ca72fe0a54b83e3c0171cab6aca73b94bcd9c0de1bf",
-      "after_sha256": "9d63b877ee732d75a22e317b516aa69f4869e0f28585254ecb44269b4b9eb17e",
+      "after_sha256": "78952e86b9fffaed97ebd4c0550b6a61222ff2509351068df8ebff130eb46e38",
       "patch": "engine/crates-horizon-client-src-game.rs.patch"
     },
     {
@@ -120,6 +120,24 @@
       "before_sha256": "0fcca49d533dcc39777140f52aeaeb373543b6c5cdb55b5c9aeb82591a8537a2",
       "after_sha256": "18c0b8f8cca9cff45280ed9460bb4831d07caf026c737323e159760db9364926",
       "patch": "engine/crates-horizon-shaders-src-translate-mod.rs.patch"
+    },
+    {
+      "path": "crates/horizon-client/src/net.rs",
+      "before_sha256": "ab27f64bf350d0f4228aed604f5defed7a568e90efad3670f244b2da53a976c5",
+      "patch": "engine/crates-horizon-client-src-net.rs.patch",
+      "after_sha256": "c4d93baf48834f9af5f1175b08276d908f899a1b0b5f9efefbd63a8cac398401"
+    },
+    {
+      "path": "crates/horizon-client/src/game/remote.rs",
+      "before_sha256": "f21bf9b2160bb8f0537ae910b1d21924a508e80d22254e29a1b4bde7559628de",
+      "patch": "engine/crates-horizon-client-src-game-remote.rs.patch",
+      "after_sha256": "5fc9b6c73bb5944756170d990ed1ce6eca61c2c50e5b98a27566f1790f9e86d5"
+    },
+    {
+      "path": "crates/horizon-client/src/game/remote_chunks.rs",
+      "before_sha256": "8fcacf37dabf32e84f19ef6ce7e0c67f564b948327f4ffcf0e7805e09f97ad20",
+      "patch": "engine/crates-horizon-client-src-game-remote_chunks.rs.patch",
+      "after_sha256": "bf768fac875fbae3ff81b91e2a74c8def8f6360c062c46341765af190f2fb7ec"
     }
   ]
 }

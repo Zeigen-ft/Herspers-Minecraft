@@ -1,0 +1,113 @@
+--- a/crates/horizon-client/src/game/remote_chunks.rs
++++ b/crates/horizon-client/src/game/remote_chunks.rs
+@@ -208,9 +208,21 @@
+                 // A frame waits for its columns, as it would for the render
+                 // thread's own work.
+                 horizon_threads::favour_current();
++                let mut last_slow = None;
+                 for (format, packet) in todo {
++                    let started = std::time::Instant::now();
+                     let column = match &*packet {
+-                        C::LevelChunkWithLight(p) => format.column(p),
++                        C::LevelChunkWithLight(p) => {
++                            let column = format.column(p);
++                            if started.elapsed() >= std::time::Duration::from_millis(50)
++                                && last_slow.is_none_or(|t: std::time::Instant| t.elapsed().as_secs() >= 10)
++                            {
++                                log::info!("Slow LevelChunkWithLight decode: x={} z={} min_y={} sections={} section_bytes={} elapsed_ms={}",
++                                    p.x, p.z, format.min_y, format.sections, p.chunk.buffer.len(), started.elapsed().as_millis());
++                                last_slow = Some(std::time::Instant::now());
++                            }
++                            column
++                        }
+                         _ => Err("not a chunk packet".into()),
+                     };
+                     if finished.send((packet, column)).is_err() {
+@@ -256,7 +268,7 @@
+         &mut self,
+         p: &play::LevelChunkWithLight,
+         decoded: Option<(&Arc<ChunkFormat>, Result<Chunk, String>)>,
+-    ) {
++    ) -> Result<(), String> {
+         // ClientChunkCache.replaceWithPacketData: a column outside the
+         // storage around the view centre is ignored.
+         if !self.remote_chunk_in_range(p.x, p.z) {
+@@ -265,22 +277,19 @@
+                 p.x,
+                 p.z
+             );
+-            return;
++            return Ok(());
+         }
+         let Some(format) = self.remote.as_ref().map(|r| r.chunk_format.clone()) else {
+-            return;
++            return Ok(());
+         };
+         let column = match decoded {
+             Some((used, column)) if Arc::ptr_eq(used, &format) => column,
+             _ => format.column(p),
+         };
+-        let chunk = match column {
+-            Ok(chunk) => chunk,
+-            Err(e) => {
+-                log::warn!("Horizon: chunk {} {}: {e}", p.x, p.z);
+-                return;
+-            }
+-        };
++        let chunk = column.map_err(|error| format!(
++            "Connection lost while loading world: invalid chunk ({}, {}) in {} ({} section bytes): {error}",
++            p.x, p.z, self.remote.as_ref().unwrap().dimension.name, p.chunk.buffer.len()
++        ))?;
+         let (x, z) = (p.x, p.z);
+         self.streaming.insert_remote(&mut self.world, chunk);
+         self.world
+@@ -297,6 +306,7 @@
+             // LevelChunk.replaceWithPacketData: the block entity loads its update tag.
+             self.remote_block_entity_data([pos.0, pos.1, pos.2], info.kind, &info.tag);
+         }
++        Ok(())
+     }
+ 
+     /// `ClientPacketListener.handleChunksBiomes`: each loaded column takes
+@@ -388,6 +398,41 @@
+             },
+             light: none,
+         }))
++    }
++
++    #[test]
++    fn truncated_column_fails_and_a_new_decoder_starts_empty() {
++        let format = Arc::new(ChunkFormat::new(
++            &DimensionType::vanilla("minecraft:overworld"),
++            vec![0, 1],
++            2,
++        ));
++        let mut p = packet(1, 2);
++        let C::LevelChunkWithLight(c) = p.as_mut() else {
++            unreachable!()
++        };
++        assert!(format.column(c).is_ok());
++        c.chunk.buffer.pop();
++        assert!(format.column(c).is_err());
++        c.chunk.buffer.clear();
++        assert!(format.column(c).is_err());
++        let old = ChunkDecoder::new();
++        assert!(old.submit(format.clone(), packet(1, 2)).is_none());
++        drop(old);
++        let fresh = ChunkDecoder::new();
++        assert!(matches!(fresh.next(), Next::Decoding));
++        assert!(fresh.submit(format, packet(9, 2)).is_none());
++        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++        loop {
++            match fresh.next() {
++                Next::Ready((p, Ok(_))) if matches!(*p, C::LevelChunkWithLight(ref c) if c.x == 9) => {
++                    break;
++                }
++                Next::Decoding => std::thread::yield_now(),
++                _ => panic!("unexpected result from new session"),
++            }
++            assert!(std::time::Instant::now() < deadline);
++        }
+     }
+ 
+     /// Columns come back one per packet, in the order the packets went in,

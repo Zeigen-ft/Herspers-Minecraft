@@ -1,0 +1,332 @@
+--- a/crates/horizon-client/src/net.rs
++++ b/crates/horizon-client/src/net.rs
+@@ -23,7 +23,7 @@
+     sync::{
+         Arc, Mutex,
+         atomic::{AtomicBool, Ordering},
+-        mpsc::{Receiver, Sender, channel},
++        mpsc::{Receiver, SyncSender, sync_channel},
+     },
+     thread::JoinHandle,
+     time::Duration,
+@@ -90,6 +90,9 @@
+     },
+ }
+ 
++// Keep the socket reader from allocating indefinitely while frames are stalled.
++const NET_EVENT_CAPACITY: usize = 32;
++
+ pub struct Session {
+     events: Receiver<Event>,
+     writer: Arc<Mutex<Option<ConnWriter>>>,
+@@ -186,7 +189,7 @@
+         resources: PathBuf,
+         lan: bool,
+     ) -> Self {
+-        let (send, events) = channel();
++        let (send, events) = sync_channel(NET_EVENT_CAPACITY);
+         let writer = Arc::new(Mutex::new(None));
+         let configuring = Arc::new(AtomicBool::new(true));
+         let counters = Arc::new(Mutex::new(None));
+@@ -245,6 +248,10 @@
+     pub fn poll(&self) -> Vec<Event> {
+         self.events.try_iter().collect()
+     }
++    /// Receive at most the free slots in the frame's ordered staging queue.
++    pub fn poll_limit(&self, slots: usize) -> Vec<Event> {
++        self.events.try_iter().take(slots).collect()
++    }
+     /// Send a play packet; silently dropped once the connection is gone,
+     /// and while the server has the connection back in configuration (a
+     /// proxy switching servers). Vanilla's `handleConfigurationStart` clears
+@@ -369,7 +376,11 @@
+ 
+ /// Reach the friend's world from the code (directly, or through a relay)
+ /// and open the tunnel: the loopback address to connect to.
+-fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(String, u16), String> {
++fn join_friend(
++    code: &str,
++    lang: &Language,
++    send: &SyncSender<Event>,
++) -> Result<(String, u16), String> {
+     use horizon_friends::{
+         PathMode,
+         guest::{self, GuestConfig},
+@@ -395,7 +406,7 @@
+     Ok(("127.0.0.1".to_owned(), port))
+ }
+ 
+-fn status(send: &Sender<Event>, text: &str) {
++fn status(send: &SyncSender<Event>, text: &str) {
+     let _ = send.send(Event::Status(text.to_owned()));
+ }
+ 
+@@ -464,7 +475,7 @@
+     auth: Option<&AuthSession>,
+     info: cfg::ClientInformation,
+     lang: &Language,
+-    send: &Sender<Event>,
++    send: &SyncSender<Event>,
+     shared_writer: &Mutex<Option<ConnWriter>>,
+     configuring: &AtomicBool,
+     shared_counters: &Mutex<Option<Arc<Counters>>>,
+@@ -640,12 +651,19 @@
+     shared_writer: &Mutex<Option<ConnWriter>>,
+     configuring: &AtomicBool,
+     lang: &Language,
+-    send: &Sender<Event>,
++    send: &SyncSender<Event>,
+     cookies: &Cookies,
+     resources: &Path,
+ ) -> Result<String, String> {
++    let mut last_packet = None;
+     loop {
+-        let (id, payload) = reader.recv().map_err(|e| connection_lost(e, lang))?;
++        let (id, payload) = reader.recv().map_err(|e| {
++            log::warn!(
++                "Play connection ended during receive; last packet (id, bytes): {last_packet:?}"
++            );
++            connection_lost(e, lang)
++        })?;
++        last_packet = Some((id, payload.len()));
+         let packet = match play::Clientbound::decode(id, &payload) {
+             Ok(p) => p,
+             Err(err) => {
+@@ -714,7 +732,13 @@
+                 });
+                 return Ok(tr(lang, "disconnect.transfer"));
+             }
+-            play::Clientbound::Disconnect(d) => return Ok(plain(&d.reason, lang)),
++            play::Clientbound::Disconnect(d) => {
++                log::info!(
++                    "Play connection ended by disconnect packet {id} ({} bytes)",
++                    payload.len()
++                );
++                return Ok(plain(&d.reason, lang));
++            }
+             play::Clientbound::CustomPayload(p) if p.channel == "minecraft:brand" => {
+                 receive_brand(&p, send);
+             }
+@@ -734,7 +758,7 @@
+     writer: &Mutex<Option<ConnWriter>>,
+     configuring: &AtomicBool,
+     lang: &Language,
+-    send: &Sender<Event>,
++    send: &SyncSender<Event>,
+     cookies: &Cookies,
+     resources: &Path,
+ ) -> Result<Dynamic, String> {
+@@ -818,7 +842,7 @@
+     }
+ }
+ 
+-fn receive_brand(payload: &cfg::CustomPayload, send: &Sender<Event>) {
++fn receive_brand(payload: &cfg::CustomPayload, send: &SyncSender<Event>) {
+     if payload.channel == "minecraft:brand"
+         && let Ok(brand) = horizon_protocol::buf::Reader::new(&payload.data).string(32767)
+     {
+@@ -1018,6 +1042,150 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use std::sync::mpsc::channel;
++
++    #[test]
++    fn private_names_and_chunk_delivery_with_three_live_connections() {
++        use crate::lan::{Lan, NetConfig, NetEvent, data::SyncData};
++        use horizon_protocol::chunk::{ChunkData, LightData, Paletted, Section, Strategy};
++        use play::Clientbound as C;
++        use std::time::Instant;
++
++        let host = Lan::start_with(
++            Arc::new(SyncData::empty()),
++            NetConfig {
++                bind: Some(std::net::Ipv4Addr::LOCALHOST.into()),
++                announce: false,
++                ..NetConfig::lan(0, "Test".into(), 8)
++            },
++        )
++        .unwrap();
++        let connect = |name: &str| {
++            let session = Session::connect(
++                &format!("127.0.0.1:{}", host.port),
++                name,
++                None,
++                cfg::ClientInformation::new(8),
++                Arc::new(Language::new()),
++                PathBuf::new(),
++            );
++            let deadline = Instant::now() + Duration::from_secs(10);
++            loop {
++                let event = session
++                    .events
++                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
++                    .unwrap();
++                match event {
++                    Event::Joined {
++                        uuid,
++                        name: accepted,
++                        ..
++                    } => {
++                        assert_eq!(accepted, name);
++                        assert_eq!(uuid, offline_uuid(name));
++                        break;
++                    }
++                    Event::Disconnected { reason, .. } => panic!("login failed: {reason}"),
++                    _ => {}
++                }
++            }
++            loop {
++                if let Some(player) = host.poll().into_iter().find_map(|e| match e {
++                    NetEvent::Joined(player) => Some(player),
++                    _ => None,
++                }) {
++                    assert_eq!(player.name, name);
++                    assert_eq!(player.uuid, offline_uuid(name));
++                    return (session, player.sender);
++                }
++                assert!(Instant::now() < deadline);
++                std::thread::sleep(Duration::from_millis(1));
++            }
++        };
++        let section = Section {
++            non_empty: 0,
++            fluids: 0,
++            states: Paletted::from_values(&[0; 4096], Strategy::Blocks, 16),
++            biomes: Paletted::from_values(&[0; 64], Strategy::Biomes, 2),
++        };
++        let column = C::LevelChunkWithLight(play::LevelChunkWithLight {
++            x: 7,
++            z: -2,
++            chunk: ChunkData {
++                heightmaps: vec![],
++                buffer: ChunkData::from_sections(&vec![section; 24]),
++                block_entities: vec![],
++            },
++            light: LightData {
++                sky_mask: vec![],
++                block_mask: vec![],
++                empty_sky_mask: vec![],
++                empty_block_mask: vec![],
++                sky: vec![],
++                block: vec![],
++            },
++        })
++        .encode();
++        let forget = C::ForgetLevelChunk(play::ForgetLevelChunk { pos: [7, -2] }).encode();
++        let mut clients = Vec::new();
++        for name in ["CJ_Corto", "Second_2", "Third_3"] {
++            clients.push(connect(name));
++            for (_, player) in &clients {
++                player.send_many([
++                    column.clone(),
++                    forget.clone(),
++                    column.clone(),
++                    forget.clone(),
++                ]);
++            }
++            for (session, _) in &clients {
++                let deadline = Instant::now() + Duration::from_secs(10);
++                let mut count = 0;
++                while count < 4 {
++                    let ev = session
++                        .events
++                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
++                        .unwrap();
++                    match ev {
++                        Event::Packet(p) => match *p {
++                            C::LevelChunkWithLight(ref c) => {
++                                assert_eq!((count % 2, c.x, c.z), (0, 7, -2));
++                                assert_eq!(c.chunk.sections(24, 16, 2).unwrap().len(), 24);
++                                count += 1;
++                            }
++                            C::ForgetLevelChunk(c) => {
++                                assert_eq!((count % 2, c.pos), (1, [7, -2]));
++                                count += 1;
++                            }
++                            _ => {}
++                        },
++                        Event::Disconnected { reason, .. } => panic!("early disconnect: {reason}"),
++                        _ => {}
++                    }
++                }
++            }
++        }
++        let (third, sender) = clients.pop().unwrap();
++        sender.disconnect(horizon_world::nbt::Tag::String("Test host restart".into()));
++        let deadline = Instant::now() + Duration::from_secs(10);
++        loop {
++            let ev = third
++                .events
++                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
++                .unwrap();
++            if let Event::Disconnected {
++                reason,
++                from_server,
++            } = ev
++            {
++                assert!(from_server);
++                assert_eq!(reason, "Test host restart");
++                break;
++            }
++        }
++        drop(third);
++        clients.push(connect("Third_3"));
++    }
+ 
+     #[test]
+     fn direct_login_keeps_the_hostname_in_the_handshake() {
+@@ -1109,7 +1277,7 @@
+         let (mut reader, writer) = c.split();
+         let (done, result) = channel();
+         std::thread::spawn(move || {
+-            let (send, _events) = channel();
++            let (send, _events) = sync_channel(NET_EVENT_CAPACITY);
+             let _ = done.send(receive_play(
+                 &mut reader,
+                 &Mutex::new(Some(writer)),
+@@ -1156,7 +1324,7 @@
+         let (mut reader, writer) = Connection::local(client).split();
+         let writer = Mutex::new(Some(writer));
+         let thread = std::thread::spawn(move || {
+-            let (send, _events) = channel();
++            let (send, _events) = sync_channel(NET_EVENT_CAPACITY);
+             configure(
+                 &mut reader,
+                 &writer,
+@@ -1270,7 +1438,7 @@
+         let (client, server) = horizon_protocol::connection::Pipe::pair();
+         let (mut reader, writer) = Connection::local(client).split();
+         let writer = Arc::new(Mutex::new(Some(writer)));
+-        let (send, events) = channel();
++        let (send, events) = sync_channel(NET_EVENT_CAPACITY);
+         let thread_writer = writer.clone();
+         let thread = std::thread::spawn(move || {
+             receive_play(
+@@ -1321,7 +1489,7 @@
+     fn play_packets_wait_out_a_reconfiguration() {
+         let (client, server) = horizon_protocol::connection::Pipe::pair();
+         let (mut reader, writer) = Connection::local(client).split();
+-        let (send, events) = channel();
++        let (send, events) = sync_channel(NET_EVENT_CAPACITY);
+         let session = Session {
+             events,
+             writer: Arc::new(Mutex::new(Some(writer))),
+@@ -1379,7 +1547,7 @@
+         let (client, server) = horizon_protocol::connection::Pipe::pair();
+         let (mut reader, writer) = Connection::local(client).split();
+         let writer = Arc::new(Mutex::new(Some(writer)));
+-        let (send, events) = channel();
++        let (send, events) = sync_channel(NET_EVENT_CAPACITY);
+         let cookies = Cookies::default();
+         let (thread_writer, thread_cookies) = (writer.clone(), cookies.clone());
+         let thread = std::thread::spawn(move || {
+@@ -1439,7 +1607,7 @@
+ 
+     #[test]
+     fn server_brand_payload_is_decoded_and_invalid_or_unrelated_payloads_are_ignored() {
+-        let (send, events) = channel();
++        let (send, events) = sync_channel(NET_EVENT_CAPACITY);
+         let mut writer = horizon_protocol::buf::Writer::new();
+         writer.string("vanilla");
+         let mut payload = cfg::CustomPayload {

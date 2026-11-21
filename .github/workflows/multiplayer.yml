@@ -1,0 +1,54 @@
+name: Private multiplayer regression tests
+on:
+  pull_request:
+    paths:
+      - 'patches/**'
+      - 'upstream.lock.json'
+      - '.github/workflows/multiplayer.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 110
+    env:
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTUP_TOOLCHAIN: '1.95.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: rustup toolchain install 1.95.0 --profile minimal
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .cache/distant-terrain-target
+            ~/.cargo/registry
+          key: private-multiplayer-windows-v1-${{ hashFiles('upstream.lock.json', 'patches/**') }}
+          restore-keys: |
+            private-multiplayer-windows-v1-
+            herps-explored-terrain-windows-rust195-
+      - name: Run native socket, chunk and client regressions
+        shell: pwsh
+        run: |
+          $env:CARGO_TARGET_DIR = Join-Path $PWD '.cache/distant-terrain-target'
+          $sourceDir = python tools/prepare_upstream.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location $sourceDir
+          cargo test --locked -p horizon-protocol --lib chunk::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p horizon-client --lib net::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p horizon-client --lib vehicle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p horizon-client --bin horizon-client remote_chunks::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p horizon-client --bin horizon-client private_name_cli
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
