@@ -1,6 +1,24 @@
 --- a/crates/horizon-client/src/game/remote_chunks.rs
 +++ b/crates/horizon-client/src/game/remote_chunks.rs
-@@ -208,9 +208,21 @@
+@@ -56,6 +56,17 @@
+         Self {
+             column: self.column,
+             ..Self::new(dimension, self.biome_map.clone(), self.biome_bits)
++        }
++    }
++
++    fn resolve(
++        self: &Arc<Self>,
++        packet: &play::LevelChunkWithLight,
++        decoded: Option<(&Arc<Self>, Result<Chunk, String>)>,
++    ) -> Result<Chunk, String> {
++        match decoded {
++            Some((used, result)) if Arc::ptr_eq(used, self) => result,
++            _ => self.column(packet),
+         }
+     }
+ 
+@@ -208,9 +219,21 @@
                  // A frame waits for its columns, as it would for the render
                  // thread's own work.
                  horizon_threads::favour_current();
@@ -23,7 +41,7 @@
                          _ => Err("not a chunk packet".into()),
                      };
                      if finished.send((packet, column)).is_err() {
-@@ -256,7 +268,7 @@
+@@ -256,7 +279,7 @@
          &mut self,
          p: &play::LevelChunkWithLight,
          decoded: Option<(&Arc<ChunkFormat>, Result<Chunk, String>)>,
@@ -32,21 +50,19 @@
          // ClientChunkCache.replaceWithPacketData: a column outside the
          // storage around the view centre is ignored.
          if !self.remote_chunk_in_range(p.x, p.z) {
-@@ -265,22 +277,19 @@
+@@ -265,22 +288,15 @@
                  p.x,
                  p.z
              );
 -            return;
-+            return Ok(());
-         }
-         let Some(format) = self.remote.as_ref().map(|r| r.chunk_format.clone()) else {
+-        }
+-        let Some(format) = self.remote.as_ref().map(|r| r.chunk_format.clone()) else {
 -            return;
-+            return Ok(());
-         };
-         let column = match decoded {
-             Some((used, column)) if Arc::ptr_eq(used, &format) => column,
-             _ => format.column(p),
-         };
+-        };
+-        let column = match decoded {
+-            Some((used, column)) if Arc::ptr_eq(used, &format) => column,
+-            _ => format.column(p),
+-        };
 -        let chunk = match column {
 -            Ok(chunk) => chunk,
 -            Err(e) => {
@@ -54,14 +70,19 @@
 -                return;
 -            }
 -        };
-+        let chunk = column.map_err(|error| format!(
++            return Ok(());
++        }
++        let Some(remote) = self.remote.as_ref() else {
++            return Ok(());
++        };
++        let chunk = remote.chunk_format.resolve(p, decoded).map_err(|error| format!(
 +            "Connection lost while loading world: invalid chunk ({}, {}) in {} ({} section bytes): {error}",
-+            p.x, p.z, self.remote.as_ref().unwrap().dimension.name, p.chunk.buffer.len()
++            p.x, p.z, remote.dimension.name, p.chunk.buffer.len()
 +        ))?;
          let (x, z) = (p.x, p.z);
          self.streaming.insert_remote(&mut self.world, chunk);
          self.world
-@@ -297,6 +306,7 @@
+@@ -297,6 +313,7 @@
              // LevelChunk.replaceWithPacketData: the block entity loads its update tag.
              self.remote_block_entity_data([pos.0, pos.1, pos.2], info.kind, &info.tag);
          }
@@ -69,7 +90,7 @@
      }
  
      /// `ClientPacketListener.handleChunksBiomes`: each loaded column takes
-@@ -388,6 +398,41 @@
+@@ -388,6 +405,53 @@
              },
              light: none,
          }))
@@ -87,6 +108,18 @@
 +            unreachable!()
 +        };
 +        assert!(format.column(c).is_ok());
++        let changed =
++            Arc::new(format.with_dimension(&DimensionType::vanilla("minecraft:the_nether")));
++        assert!(
++            changed
++                .resolve(c, Some((&format, Err("obsolete result".into()))))
++                .is_ok()
++        );
++        assert!(
++            format
++                .resolve(c, Some((&format, Err("current error".into()))))
++                .is_err()
++        );
 +        c.chunk.buffer.pop();
 +        assert!(format.column(c).is_err());
 +        c.chunk.buffer.clear();

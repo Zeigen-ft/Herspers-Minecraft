@@ -52,3 +52,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p horizon-client --bin horizon-client private_name_cli
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p horizon-client --bin horizon-client overdue_chunks_still_yield
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p horizon-client --bin horizon-client remote_vehicles::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

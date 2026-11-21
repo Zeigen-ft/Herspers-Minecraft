@@ -33,7 +33,15 @@
              server_links: Vec::new(),
              debug_query: Default::default(),
              transfer: None,
-@@ -1465,8 +1477,8 @@
+@@ -1456,6 +1468,7 @@
+         if loaded && self.remote.as_ref().is_some_and(|r| !r.loaded_sent) {
+             self.send(S::PlayerLoaded(Empty));
+             let r = self.remote.as_mut().unwrap();
++            log::info!("Multiplayer world ready; sending player loaded");
+             r.loaded_sent = true;
+             r.level_load.finish();
+         }
+@@ -1465,8 +1478,8 @@
      /// Process what the network thread received (once per frame, like the
      /// client's packet processor), in order. Chunk packets get
      /// `CHUNK_PACKETS_PER_FRAME`: once a frame has spent it, the events from
@@ -44,7 +52,7 @@
      /// A chunk packet still decoding holds
      /// back what follows it.
      pub(super) fn poll_remote(&mut self) -> Result<()> {
-@@ -1476,7 +1488,10 @@
+@@ -1476,7 +1489,10 @@
          let mut events = std::mem::take(&mut r.backlog);
          // Chunk packets start decoding now; the frame that reaches one in
          // order inserts its column.
@@ -56,7 +64,7 @@
              events.push_back(match event {
                  Event::Packet(p) if matches!(*p, C::LevelChunkWithLight(_)) => {
                      match r.decoder.submit(r.chunk_format.clone(), p) {
-@@ -1490,19 +1505,25 @@
+@@ -1490,19 +1506,25 @@
          let overdue = r
              .backlog_since
              .is_some_and(|since| since.elapsed() >= BACKLOG_LIMIT);
@@ -93,7 +101,7 @@
                  events.push_front(item);
                  break;
              }
-@@ -1522,12 +1543,19 @@
+@@ -1522,12 +1544,19 @@
                              break;
                          }
                          Next::Lost => {
@@ -116,7 +124,27 @@
                      }
                      chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
                      continue;
-@@ -1654,7 +1682,16 @@
+@@ -1549,6 +1578,7 @@
+                     // handleLogin: the level loading screen replaces any dialog.
+                     self.close_dialogs();
+                     if let Some(r) = self.remote.as_mut() {
++                        log::info!("Multiplayer login accepted; waiting for world");
+                         r.joined = true;
+                         // handleLogin: startWaitingForNewLevel with Reason.OTHER.
+                         r.profile = uuid;
+@@ -1626,6 +1656,11 @@
+                 Event::ShowDialog(dialog) => self.show_dialog(&dialog),
+                 Event::ClearDialog => self.clear_dialog(),
+                 Event::CodeOfConduct(text) => self.handle_code_of_conduct(text),
++                Event::InvalidWorldPacket(reason) => {
++                    log::warn!("{reason}");
++                    self.leave_server(Some(reason))?;
++                    return Ok(());
++                }
+                 Event::DecodeError(e) => {
+                     if let Some(r) = self.remote.as_mut() {
+                         r.decode_errors += 1;
+@@ -1654,7 +1689,16 @@
                          return Ok(());
                      }
                      let retry = self.reconnect_after(&reason, from_server);
@@ -134,7 +162,7 @@
                      self.offer_reconnect(retry);
                      return Ok(());
                  }
-@@ -2750,7 +2787,12 @@
+@@ -2750,7 +2794,12 @@
              // ClientCommonPacketListenerImpl.handlePostEffects.
              C::PostEffects(p) => self.post_effects = p.effects,
              C::SetCamera(p) => self.remote_set_camera(p.camera_id),
@@ -148,3 +176,18 @@
              C::LightUpdate(p) => self.remote_light_update(&p),
              C::ChunksBiomes(p) => self.remote_chunks_biomes(&p),
              C::ForgetLevelChunk(p) => {
+@@ -9203,6 +9252,14 @@
+     use super::synced_local_use;
+ 
+     #[test]
++    fn overdue_chunks_still_yield_to_the_next_frame() {
++        use super::{BACKLOG_LIMIT, CHUNK_PACKETS_PER_FRAME, chunk_frame_budget};
++        assert_eq!(chunk_frame_budget(false), CHUNK_PACKETS_PER_FRAME);
++        assert!(chunk_frame_budget(true) >= CHUNK_PACKETS_PER_FRAME);
++        assert!(chunk_frame_budget(true) < BACKLOG_LIMIT);
++    }
++
++    #[test]
+     fn the_server_stopping_the_use_lowers_the_shield() {
+         // Player.disableShield's stopUsingItem: flags 0 or 2 while the
+         // off-hand shield is raised (LocalPlayer.onSyncedDataUpdated →

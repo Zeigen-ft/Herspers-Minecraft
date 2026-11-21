@@ -413,9 +413,7 @@ class Launcher:
         args = [str(executable), "--resources", str(self.support / "resources" / GAME), "--game-dir", str(self.game), "--home", str(self.support)]
         if server:
             args += ["--server", server_address(server)]
-        name = name or self.config.get("player_name", "")
-        if name or server:
-            args += ["--name", self.validate_player_name(name)]
+            args += ["--name", self.validate_player_name(name or self.config.get("player_name", ""))]
         return args
 
     def launch(self, server="", name="", clean=False):
@@ -436,6 +434,11 @@ class Launcher:
                 raise ValueError("Connect Tailscale before joining a private server")
             args = self.command(server, name, clean)
             env = os.environ.copy()
+            # A menu join uses the saved name; the integrated world's owner keeps its own identity.
+            env.pop("HERPS_PRIVATE_PLAYER_NAME", None)
+            saved_name = self.config.get("player_name", "")
+            if not server and saved_name:
+                env["HERPS_PRIVATE_PLAYER_NAME"] = self.validate_player_name(saved_name)
             env.update(HORIZON_HOME=str(self.support), HORIZON_LAUNCHER_NO_SELF_UPDATE="1")
             # The game's persisted shader choice must win over developer overrides.
             env.pop("HORIZON_SHADER_PACK", None)
