@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "commit": "7301f6fdd7f470b11317276e7a11b4dc615c137a",
+  "old_repository": "Vasysik/horizon-android",
+  "new_repository": "starling-client/starling",
+  "old_archive_sha256": "9280910d4feb890e8e2b48ebe1d309fec12f222281072b63fb578f34d7840f61",
+  "new_archive_sha256": "6c5d6f0b26f13aa157bebc950be4c37ccb9799f3df5e42ed149e6a75da8ca8da",
+  "old_archive_root": "horizon-android-7301f6fdd7f470b11317276e7a11b4dc615c137a",
+  "new_archive_root": "starling-7301f6fdd7f470b11317276e7a11b4dc615c137a",
+  "members": 4883,
+  "regular_files": 4158,
+  "members_equal_after_root_normalization": true,
+  "changed_members": [],
+  "comparison": "Every member relative path, type, mode, size, link and SHA-256 of regular-file bytes; no source executed.",
+  "patched_tree_sha256": "1f28fbaa20b871bbc5c678a1668ebc3ea63ce4191be364a0ecebb41824db6a7f",
+  "patched_tree_identical": true,
+  "old_cache_preserved": true
+}

@@ -85,6 +85,32 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual((source / "src/example.rs").read_bytes(), self.after)
         self.assertEqual((origin / "src/example.rs").read_text(), "deliberate local edits")
 
+    def test_renamed_archive_same_commit_keeps_old_source_and_provenance(self):
+        old_source = self.stage()
+        old_stamp = (old_source / prepare.STAMP).read_bytes()
+        old_archive = self.archive.read_bytes()
+        renamed = self.root / "renamed.tar.gz"
+        with tarfile.open(renamed, "w:gz") as archive:
+            for name, data in {"Cargo.lock": self.lockfile, "src/example.rs": self.before}.items():
+                member = tarfile.TarInfo("renamed/" + name)
+                member.size = len(data); member.mode = 0o644
+                archive.addfile(member, io.BytesIO(data))
+        new_lock = dict(self.lock, archive_root="renamed", archive_sha256=sha(renamed.read_bytes()))
+        new_source = prepare.prepare(new_lock, self.manifest, self.cache, renamed)
+        self.assertNotEqual(new_source, old_source)
+        self.assertEqual((new_source / "src/example.rs").read_bytes(), self.after)
+        self.assertEqual((old_source / "src/example.rs").read_bytes(), self.after)
+        self.assertEqual((old_source / prepare.STAMP).read_bytes(), old_stamp)
+        self.assertEqual(self.archive.read_bytes(), old_archive)
+        self.assertEqual(prepare.tree_digest(new_source), prepare.tree_digest(old_source))
+        self.assert_no_temporary_sources()
+
+    def test_invalid_archive_identity_is_rejected_before_cache_creation(self):
+        self.lock["archive_sha256"] = "../escape"
+        with self.assertRaisesRegex(ValueError, "archive checksum"):
+            self.stage()
+        self.assertFalse(self.cache.exists())
+
     def test_new_file_patch(self):
         self.entry.update(path="src/new.rs", before_sha256=None, after_sha256=sha(b"new code\n"))
         self.patch.write_bytes(diff(b"", b"new code\n", self.entry["path"], new=True))

@@ -1,9 +1,9 @@
 {
-  "repository": "https://github.com/Vasysik/horizon-android",
+  "repository": "https://github.com/starling-client/starling",
   "commit": "7301f6fdd7f470b11317276e7a11b4dc615c137a",
-  "archive_url": "https://codeload.github.com/Vasysik/horizon-android/tar.gz/7301f6fdd7f470b11317276e7a11b4dc615c137a",
-  "archive_sha256": "9280910d4feb890e8e2b48ebe1d309fec12f222281072b63fb578f34d7840f61",
-  "archive_root": "horizon-android-7301f6fdd7f470b11317276e7a11b4dc615c137a",
+  "archive_url": "https://codeload.github.com/starling-client/starling/tar.gz/7301f6fdd7f470b11317276e7a11b4dc615c137a",
+  "archive_sha256": "6c5d6f0b26f13aa157bebc950be4c37ccb9799f3df5e42ed149e6a75da8ca8da",
+  "archive_root": "starling-7301f6fdd7f470b11317276e7a11b4dc615c137a",
   "rust_toolchain": "1.95.0",
   "horizon_version": "0.7.6",
   "minecraft_edition": "Java",
