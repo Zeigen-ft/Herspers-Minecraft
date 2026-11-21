@@ -37,6 +37,11 @@ The host reuses `Documents\Herspers-Server` if it contains `server.properties`, 
 
 The starter saves configuration backups with unique names and preserves existing worlds, player files and accepted EULAs. It reports an occupied port and never kills another server process. Stop the server before making a separate backup of its folder.
 
+
+## Windows setup and three-player troubleshooting
+
+Before preparing Java Edition 26.3 resources or hosting multiplayer, follow the [Windows setup and multiplayer recovery checklist](WINDOWS-SETUP-MULTIPLAYER-RECOVERY.md). It covers full JDK 25 verification, one-CMD-command-at-a-time setup, official version-manifest SHA-1 mismatch recovery, resource validation, backups, and a controlled three-player/vehicle-lag test. The user-reported successful friend connection does not establish a permanent fix or three-player performance acceptance.
+
 ## Troubleshooting
 
 - **Host-Tailscale.cmd or Join-Tailscale.cmd is missing:** download the latest successful **0.2.2 or newer** Windows Java build again, extract both ZIPs, and open the complete application folder. An older application folder may not contain these starters.
