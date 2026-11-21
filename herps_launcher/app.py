@@ -345,8 +345,12 @@ class Window(QMainWindow):
         self.player_name = QLineEdit()
         self.player_name.setText(self.launcher.config.get("player_name", ""))
         form.addRow("Host address", self.address)
-        form.addRow("Private player name", self.player_name)
+        form.addRow("In-Game Player Name", self.player_name)
         box.addLayout(form)
+        self.button(box, "Save player name", self.save_player_name)
+        note = QLabel("Use the same name each time. Private offline servers use it to find your inventory and progress.")
+        note.setWordWrap(True)
+        box.addWidget(note)
         self.server_list = QListWidget()
         self.server_list.currentRowChanged.connect(self.pick_server)
         box.addWidget(self.server_list, 1)
@@ -383,10 +387,14 @@ class Window(QMainWindow):
             self.launcher.save()
             self.refresh()
 
+    def save_player_name(self):
+        self.launcher.save_player_name(self.player_name.text())
+        self.statusBar().showMessage("Player name saved for the next private game.")
+
     def join(self):
-        self.launcher.config["player_name"] = self.player_name.text()
-        self.launcher.save()
-        self.play_game(server=self.address.text(), name=self.player_name.text())
+        address = server_address(self.address.text())
+        self.save_player_name()
+        self.play_game(server=address, name=self.player_name.text())
 
     def host(self):
         self.require_idle()

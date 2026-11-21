@@ -122,6 +122,8 @@ def prepare(lock: dict, manifest_path: Path, cache: Path, supplied_archive: Path
     manifest = json.loads(raw_manifest)
     if not isinstance(lock.get("commit"), str) or not re.fullmatch(r"[0-9a-f]{40,64}", lock["commit"]):
         raise ValueError("Invalid pinned upstream commit")
+    if not isinstance(lock.get("archive_sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", lock["archive_sha256"]):
+        raise ValueError("Invalid pinned archive checksum")
     if (not isinstance(manifest, dict) or set(manifest) != {"upstream_commit", "files"} or manifest["upstream_commit"] != lock["commit"]
             or not isinstance(manifest["files"], list)):
         raise ValueError("Patch manifest must match the pinned upstream commit and contain files")
@@ -146,7 +148,9 @@ def prepare(lock: dict, manifest_path: Path, cache: Path, supplied_archive: Path
         fingerprint.update(len(patch).to_bytes(8, "big") + patch)
         entries.append((entry, relative, patch))
     # Fetch verifies the archive; its editable extraction is deliberately never copied.
-    upstream_cache = cache.parent / "upstream"
+    # Repository renames change GitHub's tar wrapper without changing the git
+    # commit. Preserve older checked archives/extractions in their own caches.
+    upstream_cache = cache.parent / "upstream" / lock["archive_sha256"][:12]
     no_links(cache)
     no_links(upstream_cache)
     if supplied_archive is not None:
@@ -156,7 +160,8 @@ def prepare(lock: dict, manifest_path: Path, cache: Path, supplied_archive: Path
     ordinary(archive, archive.parent)
     patch_hash = fingerprint.hexdigest()
     cache.mkdir(parents=True, exist_ok=True)
-    destination = cache / f"{lock['commit']}-{patch_hash}"
+    source_identity = hashlib.sha256(json.dumps(lock, sort_keys=True).encode() + bytes.fromhex(patch_hash)).hexdigest()
+    destination = cache / f"{lock['commit']}-{source_identity}"
     lease = cache / f".{destination.name}.preparing"
     try:
         lease.mkdir()

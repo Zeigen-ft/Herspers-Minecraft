@@ -205,6 +205,13 @@ class PortPackBuildTests(unittest.TestCase):
                 package.build_port_pack("x86_64-unknown-linux-gnu")
         prepare.assert_not_called()
 
+    def test_preparation_failure_surfaces_original_diagnostic_before_cargo(self):
+        error = subprocess.CalledProcessError(1, ["prepare"], output="owned stdout", stderr="owned source checksum mismatch")
+        with patch.object(package.subprocess, "run", side_effect=error) as command:
+            with self.assertRaisesRegex(ValueError, "owned source checksum mismatch"):
+                package.build_port_pack("x86_64-pc-windows-msvc")
+        self.assertEqual(command.call_count, 1)
+
 
 class PyInstallerInputsTests(unittest.TestCase):
     def test_backend_and_both_feature_packages_are_explicit_for_all_targets(self):

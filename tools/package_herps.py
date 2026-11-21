@@ -59,8 +59,12 @@ def build_port_pack(host_target: str) -> tuple[Path, dict]:
     """
     if host_target not in ("x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"):
         raise ValueError("port-pack packaging requires a supported Windows/macOS target")
-    prepared = subprocess.run([sys.executable, str(ROOT / "tools/prepare_upstream.py")],
-                              cwd=ROOT, check=True, capture_output=True, text=True)
+    try:
+        prepared = subprocess.run([sys.executable, str(ROOT / "tools/prepare_upstream.py")],
+                                  cwd=ROOT, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"Pinned engine preparation failed ({error.returncode}):\n"
+                         f"{error.stdout or ''}\n{error.stderr or ''}") from error
     source = Path(prepared.stdout.strip()).resolve()
     stamp = json.loads((source / ".herspers-prepared.json").read_text(encoding="utf-8"))
     if stamp.get("upstream", {}).get("commit") != REVISION or stamp["upstream"].get("rust_toolchain") != RUST:

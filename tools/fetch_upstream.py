@@ -120,7 +120,12 @@ def main() -> int:
     args = parser.parse_args()
     try:
         lock = json.loads((ROOT / "upstream.lock.json").read_text())
-        print(fetch(lock, args.cache.resolve(), args.archive.resolve() if args.archive else None))
+        # Match the preparer's archive-specific cache while retaining older
+        # source provenance and any deliberate local edits untouched.
+        checksum = lock["archive_sha256"]
+        if not isinstance(checksum, str) or len(checksum) != 64 or any(c not in "0123456789abcdef" for c in checksum):
+            raise ValueError("Invalid pinned archive checksum")
+        print(fetch(lock, args.cache.resolve() / checksum[:12], args.archive.resolve() if args.archive else None))
         return 0
     except (OSError, ValueError, tarfile.TarError) as error:
         print(f"fetch_upstream: {error}", file=sys.stderr)

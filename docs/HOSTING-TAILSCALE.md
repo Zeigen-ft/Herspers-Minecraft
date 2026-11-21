@@ -62,3 +62,14 @@ For a different server folder or port, run these commands from the application f
 The optional `--accept-eula` flag is for automation only when the operator agrees to the [Minecraft EULA](https://aka.ms/MinecraftEULA). The normal starter asks before accepting a previously unaccepted EULA.
 
 The rebuild checks the real server's configuration parser without assets and tests private-address validation, backups and launch arguments. An actual two-PC Tailscale session still needs validation on the players' machines.
+
+## Private multiplayer troubleshooting
+
+1. In **Herps Launcher → Multiplayer**, enter **In-Game Player Name** and choose **Save player name** before starting the game. Use 3–16 letters A–Z, digits or underscores. If you see a generated name, close the game, save the name, and relaunch. With the standalone Windows game, open **Join-Tailscale.cmd** and enter the name at the prompt.
+2. Give each player a unique name. An offline host uses the name to identify saved player data. Switching names can show an empty inventory. Close the other session if the host reports a duplicate login. Rejoin with the original spelling and capitalization to access the original inventory.
+3. If the game returns to the server list, record the time and any disconnect message. In File Explorer, open `%LOCALAPPDATA%\Herspers Minecraft\herps-launcher\logs` for GUI-launched sessions. On the host, open `logs\latest.log` inside the active server folder. Share a short excerpt from each after removing names, private addresses and tokens.
+4. On a **copy** of the world, join with one, two and then three players. Stand still first, then explore; repeat with a vehicle. Record which players freeze. FPS measures one client's frames. TPS measures how often the host advances the world (normally 20 times per second). A smooth server list after a disconnect tells you neither the earlier frame time nor the host's TPS.
+5. For a short diagnostic run in Windows Command Prompt, enter `set HORIZON_SPIKES=50` and start the client or host **from that same window**. Repeat the problem once and close the window afterward. Look for slow mesh workers, terrain memory, frame or server-tick spans, and the final disconnect reason. For a client crash, also check `%LOCALAPPDATA%\Herspers Minecraft\crash-reports`. A movement warning alone does not identify what slowed down.
+6. Before rollback, type `stop` in the host console and wait for it to exit. Close the game and copy the **whole server folder** and the affected client profile to a separate backup location. Run the previous matching client and host builds on copies. Keep the original world, player data and backups.
+
+[Windows setup and multiplayer recovery checklist](https://github.com/Zeigen-ft/Herps-Launcher/blob/6e3d580/docs/WINDOWS-SETUP-MULTIPLAYER-RECOVERY.md)

@@ -1,0 +1,465 @@
+--- a/crates/horizon-client/src/net.rs
++++ b/crates/horizon-client/src/net.rs
+@@ -23,7 +23,7 @@
+     sync::{
+         Arc, Mutex,
+         atomic::{AtomicBool, Ordering},
+-        mpsc::{Receiver, Sender, channel},
++        mpsc::{Receiver, SyncSender, sync_channel},
+     },
+     thread::JoinHandle,
+     time::Duration,
+@@ -54,6 +54,8 @@
+     Packet(Box<play::Clientbound>),
+     /// A packet that failed to decode (skipped, like vanilla's skippable packets).
+     DecodeError(String),
++    /// A required world packet could not be read. End this session without retrying.
++    InvalidWorldPacket(String),
+     /// The server sent us back to configuration (`ClientboundStartConfigurationPacket`):
+     /// the game shows `ServerReconfigScreen` until the server logs it in again.
+     Reconfiguring,
+@@ -90,6 +92,9 @@
+     },
+ }
+ 
++// Keep the socket reader from allocating indefinitely while frames are stalled.
++const NET_EVENT_CAPACITY: usize = 32;
++
+ pub struct Session {
+     events: Receiver<Event>,
+     writer: Arc<Mutex<Option<ConnWriter>>>,
+@@ -186,7 +191,7 @@
+         resources: PathBuf,
+         lan: bool,
+     ) -> Self {
+-        let (send, events) = channel();
++        let (send, events) = sync_channel(NET_EVENT_CAPACITY);
+         let writer = Arc::new(Mutex::new(None));
+         let configuring = Arc::new(AtomicBool::new(true));
+         let counters = Arc::new(Mutex::new(None));
+@@ -245,6 +250,10 @@
+     pub fn poll(&self) -> Vec<Event> {
+         self.events.try_iter().collect()
+     }
++    /// Receive at most the free slots in the frame's ordered staging queue.
++    pub fn poll_limit(&self, slots: usize) -> Vec<Event> {
++        self.events.try_iter().take(slots).collect()
++    }
+     /// Send a play packet; silently dropped once the connection is gone,
+     /// and while the server has the connection back in configuration (a
+     /// proxy switching servers). Vanilla's `handleConfigurationStart` clears
+@@ -369,7 +378,11 @@
+ 
+ /// Reach the friend's world from the code (directly, or through a relay)
+ /// and open the tunnel: the loopback address to connect to.
+-fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(String, u16), String> {
++fn join_friend(
++    code: &str,
++    lang: &Language,
++    send: &SyncSender<Event>,
++) -> Result<(String, u16), String> {
+     use horizon_friends::{
+         PathMode,
+         guest::{self, GuestConfig},
+@@ -395,7 +408,7 @@
+     Ok(("127.0.0.1".to_owned(), port))
+ }
+ 
+-fn status(send: &Sender<Event>, text: &str) {
++fn status(send: &SyncSender<Event>, text: &str) {
+     let _ = send.send(Event::Status(text.to_owned()));
+ }
+ 
+@@ -464,7 +477,7 @@
+     auth: Option<&AuthSession>,
+     info: cfg::ClientInformation,
+     lang: &Language,
+-    send: &Sender<Event>,
++    send: &SyncSender<Event>,
+     shared_writer: &Mutex<Option<ConnWriter>>,
+     configuring: &AtomicBool,
+     shared_counters: &Mutex<Option<Arc<Counters>>>,
+@@ -526,7 +539,12 @@
+             }
+             login::Clientbound::Disconnect(p) => {
+                 let reason = serde_json::from_str::<serde_json::Value>(&p.reason_json)
+-                    .map(|v| json_text(&v, lang))
++                    .map(|v| {
++                        let message = json_text(&v, lang);
++                        if v.get("translate").and_then(|k| k.as_str()) == Some("multiplayer.disconnect.duplicate_login") {
++                            format!("{message}\nClose the other session. Each private offline player needs a unique name.")
++                        } else { message }
++                    })
+                     .unwrap_or(p.reason_json);
+                 return Ok(reason);
+             }
+@@ -640,12 +658,19 @@
+     shared_writer: &Mutex<Option<ConnWriter>>,
+     configuring: &AtomicBool,
+     lang: &Language,
+-    send: &Sender<Event>,
++    send: &SyncSender<Event>,
+     cookies: &Cookies,
+     resources: &Path,
+ ) -> Result<String, String> {
++    let mut last_packet = None;
+     loop {
+-        let (id, payload) = reader.recv().map_err(|e| connection_lost(e, lang))?;
++        let (id, payload) = reader.recv().map_err(|e| {
++            log::warn!(
++                "Play connection ended during receive; last packet (id, bytes): {last_packet:?}"
++            );
++            connection_lost(e, lang)
++        })?;
++        last_packet = Some((id, payload.len()));
+         let packet = match play::Clientbound::decode(id, &payload) {
+             Ok(p) => p,
+             Err(err) => {
+@@ -655,6 +680,14 @@
+                     id,
+                 )
+                 .unwrap_or("?");
++                if name == "level_chunk_with_light" {
++                    let reason = format!(
++                        "Connection lost while loading world: invalid {name} packet ({} bytes): {err}",
++                        payload.len()
++                    );
++                    let _ = send.send(Event::InvalidWorldPacket(reason));
++                    return Ok("Invalid world data".into());
++                }
+                 let _ = send.send(Event::DecodeError(format!("{name}: {err}")));
+                 continue;
+             }
+@@ -714,7 +747,20 @@
+                 });
+                 return Ok(tr(lang, "disconnect.transfer"));
+             }
+-            play::Clientbound::Disconnect(d) => return Ok(plain(&d.reason, lang)),
++            play::Clientbound::Disconnect(d) => {
++                log::info!(
++                    "Play connection ended by disconnect packet {id} ({} bytes)",
++                    payload.len()
++                );
++                let message = plain(&d.reason, lang);
++                if matches!(d.reason.get("translate"), Some(horizon_world::nbt::Tag::String(k)) if k.to_string_lossy() == "multiplayer.disconnect.duplicate_login")
++                {
++                    return Ok(format!(
++                        "{message}\nClose the other session. Each private offline player needs a unique name."
++                    ));
++                }
++                return Ok(message);
++            }
+             play::Clientbound::CustomPayload(p) if p.channel == "minecraft:brand" => {
+                 receive_brand(&p, send);
+             }
+@@ -734,7 +780,7 @@
+     writer: &Mutex<Option<ConnWriter>>,
+     configuring: &AtomicBool,
+     lang: &Language,
+-    send: &Sender<Event>,
++    send: &SyncSender<Event>,
+     cookies: &Cookies,
+     resources: &Path,
+ ) -> Result<Dynamic, String> {
+@@ -818,7 +864,7 @@
+     }
+ }
+ 
+-fn receive_brand(payload: &cfg::CustomPayload, send: &Sender<Event>) {
++fn receive_brand(payload: &cfg::CustomPayload, send: &SyncSender<Event>) {
+     if payload.channel == "minecraft:brand"
+         && let Ok(brand) = horizon_protocol::buf::Reader::new(&payload.data).string(32767)
+     {
+@@ -1018,6 +1064,238 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use std::sync::mpsc::channel;
++
++    #[test]
++    fn private_names_and_chunk_delivery_with_three_live_connections() {
++        use crate::lan::{Lan, NetConfig, NetEvent, data::SyncData};
++        use horizon_protocol::chunk::{ChunkData, LightData, Paletted, Section, Strategy};
++        use play::Clientbound as C;
++        use std::time::Instant;
++
++        let host = Lan::start_with(
++            Arc::new(SyncData::empty()),
++            NetConfig {
++                bind: Some(std::net::Ipv4Addr::LOCALHOST.into()),
++                announce: false,
++                ..NetConfig::lan(0, "Test".into(), 8)
++            },
++        )
++        .unwrap();
++        let connect = |name: &str| {
++            let session = Session::connect(
++                &format!("127.0.0.1:{}", host.port),
++                name,
++                None,
++                cfg::ClientInformation::new(8),
++                Arc::new(Language::new()),
++                PathBuf::new(),
++            );
++            let deadline = Instant::now() + Duration::from_secs(10);
++            loop {
++                let event = session
++                    .events
++                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
++                    .unwrap();
++                match event {
++                    Event::Joined {
++                        uuid,
++                        name: accepted,
++                        ..
++                    } => {
++                        assert_eq!(accepted, name);
++                        assert_eq!(uuid, offline_uuid(name));
++                        break;
++                    }
++                    Event::Disconnected { reason, .. } => panic!("login failed: {reason}"),
++                    _ => {}
++                }
++            }
++            loop {
++                if let Some(player) = host.poll().into_iter().find_map(|e| match e {
++                    NetEvent::Joined(player) => Some(player),
++                    _ => None,
++                }) {
++                    assert_eq!(player.name, name);
++                    assert_eq!(player.uuid, offline_uuid(name));
++                    return (session, player.sender);
++                }
++                assert!(Instant::now() < deadline);
++                std::thread::sleep(Duration::from_millis(1));
++            }
++        };
++        let section = Section {
++            non_empty: 0,
++            fluids: 0,
++            states: Paletted::from_values(&[0; 4096], Strategy::Blocks, 16),
++            biomes: Paletted::from_values(&[0; 64], Strategy::Biomes, 2),
++        };
++        let column = C::LevelChunkWithLight(play::LevelChunkWithLight {
++            x: 7,
++            z: -2,
++            chunk: ChunkData {
++                heightmaps: vec![],
++                buffer: ChunkData::from_sections(&vec![section; 24]),
++                block_entities: vec![],
++            },
++            light: LightData {
++                sky_mask: vec![],
++                block_mask: vec![],
++                empty_sky_mask: vec![],
++                empty_block_mask: vec![],
++                sky: vec![],
++                block: vec![],
++            },
++        })
++        .encode();
++        let forget = C::ForgetLevelChunk(play::ForgetLevelChunk { pos: [7, -2] }).encode();
++        let mut clients = Vec::new();
++        for name in ["CJ_Corto", "Second_2", "Third_3"] {
++            clients.push(connect(name));
++            for (_, player) in &clients {
++                player.send_many([
++                    column.clone(),
++                    forget.clone(),
++                    column.clone(),
++                    forget.clone(),
++                ]);
++            }
++            for (session, _) in &clients {
++                let deadline = Instant::now() + Duration::from_secs(10);
++                let mut count = 0;
++                while count < 4 {
++                    let ev = session
++                        .events
++                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
++                        .unwrap();
++                    match ev {
++                        Event::Packet(p) => match *p {
++                            C::LevelChunkWithLight(ref c) => {
++                                assert_eq!((count % 2, c.x, c.z), (0, 7, -2));
++                                assert_eq!(c.chunk.sections(24, 16, 2).unwrap().len(), 24);
++                                count += 1;
++                            }
++                            C::ForgetLevelChunk(c) => {
++                                assert_eq!((count % 2, c.pos), (1, [7, -2]));
++                                count += 1;
++                            }
++                            _ => {}
++                        },
++                        Event::Disconnected { reason, .. } => panic!("early disconnect: {reason}"),
++                        _ => {}
++                    }
++                }
++            }
++        }
++        // First poll promptly, then withhold host polling across a burst of four moves.
++        // This exercises ordered vehicle transport while the other two peers remain joined.
++        for batch in [1, 4] {
++            for i in 0..batch {
++                clients[2]
++                    .0
++                    .send(play::Serverbound::MoveVehicle(play::MoveVehicleRequest {
++                        position: [f64::from(i), 64.0, 0.0],
++                        yaw: 0.0,
++                        pitch: 0.0,
++                        on_ground: true,
++                    }));
++            }
++            let deadline = Instant::now() + Duration::from_secs(10);
++            let mut seen = 0;
++            while seen < batch {
++                for ev in host.poll() {
++                    if let NetEvent::Packet(_, p, _) = ev
++                        && let play::Serverbound::MoveVehicle(m) = *p
++                    {
++                        assert_eq!(m.position, [f64::from(seen), 64.0, 0.0]);
++                        seen += 1;
++                    }
++                }
++                assert!(Instant::now() < deadline);
++                std::thread::yield_now();
++            }
++        }
++        let (third, sender) = clients.pop().unwrap();
++        sender.disconnect(horizon_world::nbt::Tag::String("Test host restart".into()));
++        let deadline = Instant::now() + Duration::from_secs(10);
++        loop {
++            let ev = third
++                .events
++                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
++                .unwrap();
++            if let Event::Disconnected {
++                reason,
++                from_server,
++            } = ev
++            {
++                assert!(from_server);
++                assert_eq!(reason, "Test host restart");
++                break;
++            }
++        }
++        drop(third);
++        clients.push(connect("Third_3"));
++    }
++
++    #[test]
++    fn bounded_network_queue_preserves_order_when_receiver_pauses() {
++        use std::sync::mpsc::TrySendError;
++        let (send, events) = sync_channel(NET_EVENT_CAPACITY);
++        for i in 0..NET_EVENT_CAPACITY {
++            send.try_send(Event::Status(i.to_string())).unwrap();
++        }
++        assert!(matches!(
++            send.try_send(Event::Status("next".into())),
++            Err(TrySendError::Full(_))
++        ));
++        let (ready, opened) = channel();
++        let producer = std::thread::spawn(move || {
++            ready.send(()).unwrap();
++            send.send(Event::Status("next".into())).unwrap();
++        });
++        opened.recv_timeout(Duration::from_secs(5)).unwrap();
++        for i in 0..NET_EVENT_CAPACITY {
++            assert!(
++                matches!(events.recv_timeout(Duration::from_secs(5)), Ok(Event::Status(s)) if s == i.to_string())
++            );
++        }
++        assert!(
++            matches!(events.recv_timeout(Duration::from_secs(5)), Ok(Event::Status(s)) if s == "next")
++        );
++        producer.join().unwrap();
++    }
++
++    #[test]
++    fn incomplete_required_chunk_reports_the_packet_and_ends_play() {
++        use horizon_protocol::{Direction, State, buf::Writer, connection::Pipe};
++        let (client, server) = Pipe::pair();
++        let (mut reader, writer) = Connection::local(client).split();
++        let mut server = Connection::local(server);
++        let id = (0..256)
++            .find(|&id| {
++                horizon_protocol::ids::name(State::Play, Direction::Clientbound, id)
++                    == Some("level_chunk_with_light")
++            })
++            .unwrap();
++        let mut packet = Writer::new();
++        packet.varint(id);
++        server.send(&packet.data).unwrap();
++        drop(server);
++        let (send, received) = sync_channel(NET_EVENT_CAPACITY);
++        let result = receive_play(
++            &mut reader,
++            &Mutex::new(Some(writer)),
++            &AtomicBool::new(false),
++            &Language::new(),
++            &send,
++            &Cookies::default(),
++            Path::new(""),
++        );
++        assert_eq!(result.unwrap(), "Invalid world data");
++        assert!(
++            matches!(received.try_recv(), Ok(Event::InvalidWorldPacket(text)) if text.contains("level_chunk_with_light") && text.contains("0 bytes"))
++        );
++    }
+ 
+     #[test]
+     fn direct_login_keeps_the_hostname_in_the_handshake() {
+@@ -1109,7 +1387,7 @@
+         let (mut reader, writer) = c.split();
+         let (done, result) = channel();
+         std::thread::spawn(move || {
+-            let (send, _events) = channel();
++            let (send, _events) = sync_channel(NET_EVENT_CAPACITY);
+             let _ = done.send(receive_play(
+                 &mut reader,
+                 &Mutex::new(Some(writer)),
+@@ -1156,7 +1434,7 @@
+         let (mut reader, writer) = Connection::local(client).split();
+         let writer = Mutex::new(Some(writer));
+         let thread = std::thread::spawn(move || {
+-            let (send, _events) = channel();
++            let (send, _events) = sync_channel(NET_EVENT_CAPACITY);
+             configure(
+                 &mut reader,
+                 &writer,
+@@ -1270,7 +1548,7 @@
+         let (client, server) = horizon_protocol::connection::Pipe::pair();
+         let (mut reader, writer) = Connection::local(client).split();
+         let writer = Arc::new(Mutex::new(Some(writer)));
+-        let (send, events) = channel();
++        let (send, events) = sync_channel(NET_EVENT_CAPACITY);
+         let thread_writer = writer.clone();
+         let thread = std::thread::spawn(move || {
+             receive_play(
+@@ -1321,7 +1599,7 @@
+     fn play_packets_wait_out_a_reconfiguration() {
+         let (client, server) = horizon_protocol::connection::Pipe::pair();
+         let (mut reader, writer) = Connection::local(client).split();
+-        let (send, events) = channel();
++        let (send, events) = sync_channel(NET_EVENT_CAPACITY);
+         let session = Session {
+             events,
+             writer: Arc::new(Mutex::new(Some(writer))),
+@@ -1379,7 +1657,7 @@
+         let (client, server) = horizon_protocol::connection::Pipe::pair();
+         let (mut reader, writer) = Connection::local(client).split();
+         let writer = Arc::new(Mutex::new(Some(writer)));
+-        let (send, events) = channel();
++        let (send, events) = sync_channel(NET_EVENT_CAPACITY);
+         let cookies = Cookies::default();
+         let (thread_writer, thread_cookies) = (writer.clone(), cookies.clone());
+         let thread = std::thread::spawn(move || {
+@@ -1439,7 +1717,7 @@
+ 
+     #[test]
+     fn server_brand_payload_is_decoded_and_invalid_or_unrelated_payloads_are_ignored() {
+-        let (send, events) = channel();
++        let (send, events) = sync_channel(NET_EVENT_CAPACITY);
+         let mut writer = horizon_protocol::buf::Writer::new();
+         writer.string("vanilla");
+         let mut payload = cfg::CustomPayload {

@@ -395,6 +395,16 @@ class Launcher:
             raise ValueError("Native mods need rebuilding. Review and use Rebuild native mods first")
         return binary
 
+    @staticmethod
+    def validate_player_name(name):
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_]{3,16}", name):
+            raise ValueError("In-Game Player Name must be 3–16 ASCII letters, digits or underscores")
+        return name
+
+    def save_player_name(self, name):
+        self.config["player_name"] = self.validate_player_name(name)
+        self.save()
+
     def command(self, server="", name="", clean=False):
         from .modpacks.chainmail import protect_launch
         protect_launch(self)
@@ -402,9 +412,8 @@ class Launcher:
         executable = installation.binary("horizon-client") if clean else self.native_binary() or installation.binary("horizon-client")
         args = [str(executable), "--resources", str(self.support / "resources" / GAME), "--game-dir", str(self.game), "--home", str(self.support)]
         if server:
-            if not re.fullmatch("[A-Za-z0-9_]{3,16}", name):
-                raise ValueError("Private multiplayer needs a player name of 3–16 letters, digits or underscores")
-            args += ["--server", server_address(server), "--name", name]
+            args += ["--server", server_address(server)]
+            args += ["--name", self.validate_player_name(name or self.config.get("player_name", ""))]
         return args
 
     def launch(self, server="", name="", clean=False):
@@ -425,6 +434,11 @@ class Launcher:
                 raise ValueError("Connect Tailscale before joining a private server")
             args = self.command(server, name, clean)
             env = os.environ.copy()
+            # A menu join uses the saved name; the integrated world's owner keeps its own identity.
+            env.pop("HERPS_PRIVATE_PLAYER_NAME", None)
+            saved_name = self.config.get("player_name", "")
+            if not server and saved_name:
+                env["HERPS_PRIVATE_PLAYER_NAME"] = self.validate_player_name(saved_name)
             env.update(HORIZON_HOME=str(self.support), HORIZON_LAUNCHER_NO_SELF_UPDATE="1")
             # The game's persisted shader choice must win over developer overrides.
             env.pop("HORIZON_SHADER_PACK", None)

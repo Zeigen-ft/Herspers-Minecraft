@@ -1,0 +1,33 @@
+--- a/crates/horizon-client-render/src/streaming.rs
++++ b/crates/horizon-client-render/src/streaming.rs
+@@ -587,6 +587,7 @@
+                         // cloning it per job copied every state and face shape.
+                         let mut faces: Option<(Arc<MeshTables>, FaceVisibility)> = None;
+                         let mut mesh_scratch = MeshScratch::default();
++                        let mut last_mesh_report: Option<std::time::Instant> = None;
+                         loop {
+                             let job = {
+                                 let mut queue = shared.queue.lock().unwrap();
+@@ -688,6 +689,7 @@
+                                     Done::Lit(x, z, light_chunk(&borrow(&region), &light, sky), seq)
+                                 }
+                                 Job::Mesh(x, sy, z, region, seq, settings) => {
++                                    let probe = crate::spans::enabled().then(std::time::Instant::now);
+                                     let context = shared.context.read().unwrap().clone();
+                                     let visibility = match faces.take() {
+                                         Some((tables, visibility))
+@@ -718,6 +720,14 @@
+                                     );
+                                     mesh.sort_solid();
+                                     faces = Some((context.tables.clone(), mesher.visibility));
++                                    if let Some(start) = probe
++                                        && start.elapsed().as_millis() >= 50
++                                        && last_mesh_report.is_none_or(|t| t.elapsed().as_secs() >= 10)
++                                    {
++                                        log::info!("Slow mesh worker {i}: section ({x}, {sy}, {z}), {} ms, output capacity {} bytes",
++                                                   start.elapsed().as_millis(), mesh.capacity_bytes());
++                                        last_mesh_report = Some(std::time::Instant::now());
++                                    }
+                                     Done::Meshed(x, sy, z, mesh, seq)
+                                 }
+                             });
